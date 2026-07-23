@@ -3,19 +3,19 @@ package com.example.shopapp
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.shopapp.data.ShopAppContainer
+import com.example.shopapp.ui.catalog.CatalogScreen
+import com.example.shopapp.ui.catalog.CatalogViewModel
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme {
-                Surface {
-                    Text("ShopApp")
-                }
-            }
+            val catalogViewModel: CatalogViewModel = viewModel(
+                factory = CatalogViewModel.factory(ShopAppContainer.repository)
+            )
+            CatalogScreen(viewModel = catalogViewModel)
         }
     }
 }
