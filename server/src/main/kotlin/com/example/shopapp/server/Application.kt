@@ -43,9 +43,17 @@ fun Application.module(databasePath: Path = defaultDatabasePath()) {
 
         route("/api") {
             get("/products") {
-                val category = call.request.queryParameters["category"]
+                val categoryParameter = call.request.queryParameters["category"]
+                val category = categoryParameter?.toIntOrNull()
+                if (categoryParameter != null && (category == null || category <= 0)) {
+                    return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid category"))
+                }
                 val search = call.request.queryParameters["search"]
                 call.respond(catalogRepository.findAll(category, search))
+            }
+
+            get("/categories") {
+                call.respond(catalogRepository.findCategories())
             }
 
             get("/products/{id}") {

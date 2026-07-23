@@ -35,10 +35,62 @@ class ApplicationTest {
         testApplication {
             application { module(databasePath) }
 
-            val response = client.get("/api/products?category=audio&search=JBL")
+            val response = client.get("/api/products?category=3&search=jBl")
 
             assertEquals(HttpStatusCode.OK, response.status)
             assertTrue(response.bodyAsText().contains("JBL Tune 520BT"))
+            assertTrue(!response.bodyAsText().contains("AirPods Pro 2"))
+        }
+    }
+
+    @Test
+    fun catalogRejectsInvalidCategory() = withTestDatabase { databasePath ->
+        testApplication {
+            application { module(databasePath) }
+
+            assertEquals(
+                HttpStatusCode.BadRequest,
+                client.get("/api/products?category=audio").status,
+            )
+            assertEquals(
+                HttpStatusCode.BadRequest,
+                client.get("/api/products?category=0").status,
+            )
+        }
+    }
+
+    @Test
+    fun catalogContainsOnlyActiveProducts() = withTestDatabase { databasePath ->
+        testApplication {
+            application { module(databasePath) }
+
+            val response = client.get("/api/products")
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertTrue(!response.bodyAsText().contains("Старый товара нет на складе"))
+            assertEquals(HttpStatusCode.NotFound, client.get("/api/products/16").status)
+        }
+    }
+
+    @Test
+    fun categoriesAreReturned() = withTestDatabase { databasePath ->
+        testApplication {
+            application { module(databasePath) }
+
+            val response = client.get("/api/categories")
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertTrue(response.bodyAsText().contains(""""slug":"smartfony""""))
+            assertTrue(response.bodyAsText().contains(""""slug":"igrovye""""))
+        }
+    }
+
+    @Test
+    fun missingProductReturnsNotFound() = withTestDatabase { databasePath ->
+        testApplication {
+            application { module(databasePath) }
+
+            assertEquals(HttpStatusCode.NotFound, client.get("/api/products/999999").status)
         }
     }
 

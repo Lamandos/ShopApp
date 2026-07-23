@@ -21,8 +21,9 @@ curl http://localhost:8080/health
 
 REST API:
 
-- `GET /api/products?category=<slug>&search=<text>`
+- `GET /api/products?category=<id>&search=<text>`
 - `GET /api/products/{id}`
+- `GET /api/categories`
 - `POST /api/orders`
 - `GET /api/orders/{id}`
 - `GET /api/admin/stats?from=YYYY-MM-DD&to=YYYY-MM-DD`

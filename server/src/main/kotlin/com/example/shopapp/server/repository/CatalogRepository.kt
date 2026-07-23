@@ -6,7 +6,7 @@ import com.example.shopapp.server.dto.ProductDto
 import java.sql.ResultSet
 
 class CatalogRepository(private val database: Database) {
-    fun findAll(category: String?, search: String?): List<ProductDto> = database.query { connection ->
+    fun findAll(category: Int?, search: String?): List<ProductDto> = database.query { connection ->
         val sql = buildString {
             append(
                 """
@@ -17,18 +17,38 @@ class CatalogRepository(private val database: Database) {
                 WHERE p.is_active = 1
                 """.trimIndent()
             )
-            if (!category.isNullOrBlank()) append(" AND c.slug = ?")
+            if (category != null) append(" AND c.id = ?")
             if (!search.isNullOrBlank()) append(" AND LOWER(p.name) LIKE LOWER(?)")
             append(" ORDER BY p.id")
         }
 
         connection.prepareStatement(sql).use { statement ->
             var index = 1
-            if (!category.isNullOrBlank()) statement.setString(index++, category)
+            if (category != null) statement.setInt(index++, category)
             if (!search.isNullOrBlank()) statement.setString(index, "%${search.trim()}%")
             statement.executeQuery().use { result ->
                 buildList {
                     while (result.next()) add(result.toProduct())
+                }
+            }
+        }
+    }
+
+    fun findCategories(): List<CategoryDto> = database.query { connection ->
+        connection.prepareStatement(
+            "SELECT id, name, slug FROM categories ORDER BY id"
+        ).use { statement ->
+            statement.executeQuery().use { result ->
+                buildList {
+                    while (result.next()) {
+                        add(
+                            CategoryDto(
+                                id = result.getLong("id"),
+                                name = result.getString("name"),
+                                slug = result.getString("slug"),
+                            )
+                        )
+                    }
                 }
             }
         }
