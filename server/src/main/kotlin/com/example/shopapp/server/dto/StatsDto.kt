@@ -4,10 +4,9 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 data class StatsDto(
-    val revenueKopecks: Long,
-    val orderCount: Long,
-    val paidOrderCount: Long,
-    val averageOrderKopecks: Long,
+    val revenue: Long,
+    val ordersCount: Long,
+    val averageCheck: Long,
     val topProducts: List<TopProductDto>,
 )
 
@@ -16,5 +15,5 @@ data class TopProductDto(
     val productId: Long,
     val productName: String,
     val quantity: Long,
-    val revenueKopecks: Long,
+    val revenue: Long,
 )

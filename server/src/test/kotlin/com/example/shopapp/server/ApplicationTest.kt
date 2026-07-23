@@ -263,8 +263,38 @@ class ApplicationTest {
             val response = client.get("/api/admin/stats?from=2025-05-01&to=2025-07-31")
 
             assertEquals(HttpStatusCode.OK, response.status)
-            assertTrue(response.bodyAsText().contains("revenueKopecks"))
-            assertTrue(response.bodyAsText().contains("averageOrderKopecks"))
+            val body = response.bodyAsText()
+            assertTrue(body.contains(""""revenue":3688166228"""))
+            assertTrue(body.contains(""""ordersCount":290"""))
+            assertTrue(body.contains(""""averageCheck":12717814"""))
+            assertEquals(5, Regex(""""productId":""").findAll(body).count())
+            assertTrue(body.contains(""""productId":4,"productName":"MacBook Air M3","quantity":53,"revenue":710047400"""))
+            assertTrue(!body.contains("paidOrderCount"))
+        }
+    }
+
+    @Test
+    fun statsRequireValidInclusivePeriod() = withTestDatabase { databasePath ->
+        testApplication {
+            application { module(databasePath) }
+
+            assertEquals(HttpStatusCode.BadRequest, client.get("/api/admin/stats").status)
+            assertEquals(
+                HttpStatusCode.BadRequest,
+                client.get("/api/admin/stats?from=2025-5-01&to=2025-07-31").status,
+            )
+            assertEquals(
+                HttpStatusCode.BadRequest,
+                client.get("/api/admin/stats?from=2025-08-01&to=2025-07-31").status,
+            )
+
+            val emptyPeriod = client.get("/api/admin/stats?from=2030-01-01&to=2030-01-01")
+            assertEquals(HttpStatusCode.OK, emptyPeriod.status)
+            assertTrue(
+                emptyPeriod.bodyAsText().contains(
+                    """"revenue":0,"ordersCount":0,"averageCheck":0,"topProducts":[]""",
+                )
+            )
         }
     }
 

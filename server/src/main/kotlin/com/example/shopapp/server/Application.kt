@@ -23,6 +23,7 @@ import io.ktor.server.routing.routing
 import kotlinx.serialization.Serializable
 import java.nio.file.Files
 import java.nio.file.Path
+import java.time.LocalDate
 
 @Serializable
 data class HealthResponse(val status: String)
@@ -92,8 +93,22 @@ fun Application.module(databasePath: Path = defaultDatabasePath()) {
             }
 
             get("/admin/stats") {
-                val from = call.request.queryParameters["from"]
-                val to = call.request.queryParameters["to"]
+                val from = call.request.queryParameters["from"]?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
+                    ?: return@get call.respond(
+                        HttpStatusCode.BadRequest,
+                        ErrorResponse("from must have YYYY-MM-DD format"),
+                    )
+                val to = call.request.queryParameters["to"]?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
+                    ?: return@get call.respond(
+                        HttpStatusCode.BadRequest,
+                        ErrorResponse("to must have YYYY-MM-DD format"),
+                    )
+                if (from > to) {
+                    return@get call.respond(
+                        HttpStatusCode.BadRequest,
+                        ErrorResponse("from must not be after to"),
+                    )
+                }
                 call.respond(statsRepository.get(from, to))
             }
         }

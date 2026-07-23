@@ -6,124 +6,156 @@ import com.example.shopapp.server.dto.TopProductDto
 import com.example.shopapp.server.service.PromoCode
 import com.example.shopapp.server.service.PromoService
 import java.sql.Connection
+import java.time.LocalDate
+import java.time.LocalDateTime
 
-class StatsRepository(private val database: Database) {
-    private val promoService = PromoService()
-    fun get(from: String?, to: String?): StatsDto = database.query { connection ->
+class StatsRepository(
+    private val database: Database,
+    private val promoService: PromoService = PromoService(),
+) {
+    fun get(from: LocalDate, to: LocalDate): StatsDto = database.query { connection ->
         val paidOrders = loadPaidOrders(connection, from, to)
-        val revenue = paidOrders.sumOf { it.totalKopecks }
-        val orderCount = countNotCancelled(connection, from, to)
-        val paidOrderCount = paidOrders.size.toLong()
+        val revenue = paidOrders.sumOf { order ->
+            val promo = order.promocode?.let { findPromocode(connection, it) }
+            val discount = if (promo == null) {
+                0
+            } else {
+                promoService.calculate(promo, order.subtotal, parseCreatedAt(order.createdAt)).discountKopecks
+            }
+            order.subtotal - discount
+        }
+        val paidOrdersCount = paidOrders.size.toLong()
 
         StatsDto(
-            revenueKopecks = revenue,
-            orderCount = orderCount,
-            paidOrderCount = paidOrderCount,
-            averageOrderKopecks = if (paidOrderCount == 0L) 0 else revenue / paidOrderCount,
+            revenue = revenue,
+            ordersCount = countNotCancelled(connection, from, to),
+            averageCheck = if (paidOrdersCount == 0L) 0 else revenue / paidOrdersCount,
             topProducts = loadTopProducts(connection, from, to),
         )
     }
 
-    private data class PaidOrder(val totalKopecks: Long)
+    private data class PaidOrder(
+        val createdAt: String,
+        val promocode: String?,
+        val subtotal: Long,
+    )
 
-    private fun loadPaidOrders(connection: Connection, from: String?, to: String?): List<PaidOrder> {
-        val (dateSql, parameters) = dateFilter(from, to)
-        val sql =
+    private fun loadPaidOrders(connection: Connection, from: LocalDate, to: LocalDate): List<PaidOrder> =
+        connection.prepareStatement(
             """
+            WITH ranked_status AS (
+                SELECT order_id, status,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY order_id
+                           ORDER BY datetime(created_at) DESC, id DESC
+                       ) AS row_number
+                FROM order_status_history
+            )
             SELECT o.created_at, o.promocode, SUM(oi.price * oi.quantity) AS subtotal
             FROM orders o
+            JOIN ranked_status rs ON rs.order_id = o.id AND rs.row_number = 1
             JOIN order_items oi ON oi.order_id = o.id
-            WHERE (
-                SELECT h.status FROM order_status_history h
-                WHERE h.order_id = o.id
-                ORDER BY h.created_at DESC, h.id DESC LIMIT 1
-            ) IN ('paid', 'shipped', 'delivered')
-            $dateSql
-            GROUP BY o.id
-            """.trimIndent()
-
-        return connection.prepareStatement(sql).use { statement ->
-            parameters.forEachIndexed { index, value -> statement.setString(index + 1, value) }
-            statement.executeQuery().use { result ->
-                buildList {
-                    while (result.next()) {
-                        val subtotal = result.getLong("subtotal")
-                        val promocode = result.getString("promocode")?.let {
-                            findPromocode(connection, it, subtotal, result.getString("created_at"))
-                        }
-                        add(PaidOrder(subtotal - (promocode?.let { promoService.discount(it, subtotal) } ?: 0)))
-                    }
-                }
-            }
-        }
-    }
-
-    private fun countNotCancelled(connection: Connection, from: String?, to: String?): Long {
-        val (dateSql, parameters) = dateFilter(from, to)
-        return connection.prepareStatement(
-            """
-            SELECT COUNT(*) FROM orders o
-            WHERE COALESCE((
-                SELECT h.status FROM order_status_history h
-                WHERE h.order_id = o.id
-                ORDER BY h.created_at DESC, h.id DESC LIMIT 1
-            ), 'new') != 'cancelled'
-            $dateSql
+            WHERE rs.status IN ('paid', 'shipped', 'delivered')
+              AND date(o.created_at) BETWEEN date(?) AND date(?)
+            GROUP BY o.id, o.created_at, o.promocode
             """.trimIndent()
         ).use { statement ->
-            parameters.forEachIndexed { index, value -> statement.setString(index + 1, value) }
-            statement.executeQuery().use { result -> result.next(); result.getLong(1) }
-        }
-    }
-
-    private fun loadTopProducts(connection: Connection, from: String?, to: String?): List<TopProductDto> {
-        val (dateSql, parameters) = dateFilter(from, to)
-        return connection.prepareStatement(
-            """
-            SELECT oi.product_id, oi.product_name, SUM(oi.quantity) AS quantity,
-                   SUM(oi.price * oi.quantity) AS revenue
-            FROM order_items oi
-            JOIN orders o ON o.id = oi.order_id
-            WHERE (
-                SELECT h.status FROM order_status_history h
-                WHERE h.order_id = o.id
-                ORDER BY h.created_at DESC, h.id DESC LIMIT 1
-            ) IN ('paid', 'shipped', 'delivered')
-            $dateSql
-            GROUP BY oi.product_id, oi.product_name
-            ORDER BY revenue DESC
-            LIMIT 10
-            """.trimIndent()
-        ).use { statement ->
-            parameters.forEachIndexed { index, value -> statement.setString(index + 1, value) }
+            statement.setString(1, from.toString())
+            statement.setString(2, to.toString())
             statement.executeQuery().use { result ->
                 buildList {
                     while (result.next()) {
                         add(
-                            TopProductDto(
-                                productId = result.getLong("product_id"),
-                                productName = result.getString("product_name"),
-                                quantity = result.getLong("quantity"),
-                                revenueKopecks = result.getLong("revenue"),
+                            PaidOrder(
+                                createdAt = result.getString("created_at"),
+                                promocode = result.getString("promocode"),
+                                subtotal = result.getLong("subtotal"),
                             )
                         )
                     }
                 }
             }
         }
-    }
 
-    private fun findPromocode(connection: Connection, code: String, subtotal: Long, at: String): PromoCode? =
+    private fun countNotCancelled(connection: Connection, from: LocalDate, to: LocalDate): Long =
         connection.prepareStatement(
             """
-            SELECT code, type, value, is_active, valid_until, min_order, max_uses, used_count FROM promocodes
-            WHERE code = ? AND (valid_until IS NULL OR valid_until >= ?)
-              AND (min_order IS NULL OR min_order <= ?)
+            WITH ranked_status AS (
+                SELECT order_id, status,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY order_id
+                           ORDER BY datetime(created_at) DESC, id DESC
+                       ) AS row_number
+                FROM order_status_history
+            )
+            SELECT COUNT(*)
+            FROM orders o
+            LEFT JOIN ranked_status rs ON rs.order_id = o.id AND rs.row_number = 1
+            WHERE COALESCE(rs.status, 'new') != 'cancelled'
+              AND date(o.created_at) BETWEEN date(?) AND date(?)
+            """.trimIndent()
+        ).use { statement ->
+            statement.setString(1, from.toString())
+            statement.setString(2, to.toString())
+            statement.executeQuery().use { result ->
+                check(result.next())
+                result.getLong(1)
+            }
+        }
+
+    private fun loadTopProducts(
+        connection: Connection,
+        from: LocalDate,
+        to: LocalDate,
+    ): List<TopProductDto> = connection.prepareStatement(
+        """
+        WITH ranked_status AS (
+            SELECT order_id, status,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY order_id
+                       ORDER BY datetime(created_at) DESC, id DESC
+                   ) AS row_number
+            FROM order_status_history
+        )
+        SELECT oi.product_id, oi.product_name, SUM(oi.quantity) AS quantity,
+               SUM(oi.price * oi.quantity) AS revenue
+        FROM orders o
+        JOIN ranked_status rs ON rs.order_id = o.id AND rs.row_number = 1
+        JOIN order_items oi ON oi.order_id = o.id
+        WHERE rs.status IN ('paid', 'shipped', 'delivered')
+          AND date(o.created_at) BETWEEN date(?) AND date(?)
+        GROUP BY oi.product_id, oi.product_name
+        ORDER BY revenue DESC, oi.product_id
+        LIMIT 5
+        """.trimIndent()
+    ).use { statement ->
+        statement.setString(1, from.toString())
+        statement.setString(2, to.toString())
+        statement.executeQuery().use { result ->
+            buildList {
+                while (result.next()) {
+                    add(
+                        TopProductDto(
+                            productId = result.getLong("product_id"),
+                            productName = result.getString("product_name"),
+                            quantity = result.getLong("quantity"),
+                            revenue = result.getLong("revenue"),
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    private fun findPromocode(connection: Connection, code: String): PromoCode? =
+        connection.prepareStatement(
+            """
+            SELECT code, type, value, is_active, valid_until, min_order, max_uses, used_count
+            FROM promocodes
+            WHERE code = ?
             """.trimIndent()
         ).use { statement ->
             statement.setString(1, code)
-            statement.setString(2, at)
-            statement.setLong(3, subtotal)
             statement.executeQuery().use { result ->
                 if (!result.next()) return@use null
                 PromoCode(
@@ -139,17 +171,7 @@ class StatsRepository(private val database: Database) {
             }
         }
 
-    private fun dateFilter(from: String?, to: String?): Pair<String, List<String>> {
-        val parts = mutableListOf<String>()
-        val parameters = mutableListOf<String>()
-        if (!from.isNullOrBlank()) {
-            parts += "o.created_at >= ?"
-            parameters += from
-        }
-        if (!to.isNullOrBlank()) {
-            parts += "o.created_at <= ?"
-            parameters += to
-        }
-        return (if (parts.isEmpty()) "" else "AND ${parts.joinToString(" AND ")}") to parameters
-    }
+    private fun parseCreatedAt(value: String): LocalDateTime =
+        runCatching { LocalDateTime.parse(value) }
+            .getOrElse { LocalDate.parse(value).atStartOfDay() }
 }
