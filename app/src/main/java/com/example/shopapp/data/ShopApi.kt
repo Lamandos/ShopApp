@@ -4,6 +4,7 @@ import com.example.shopapp.data.model.Category
 import com.example.shopapp.data.model.CreateOrderRequest
 import com.example.shopapp.data.model.CreateOrderResponse
 import com.example.shopapp.data.model.Product
+import com.example.shopapp.data.model.Stats
 import retrofit2.http.GET
 import retrofit2.http.Body
 import retrofit2.http.POST
@@ -21,4 +22,10 @@ interface ShopApi {
 
     @POST("api/orders")
     suspend fun createOrder(@Body request: CreateOrderRequest): CreateOrderResponse
+
+    @GET("api/admin/stats")
+    suspend fun getStats(
+        @Query("from") from: String,
+        @Query("to") to: String,
+    ): Stats
 }
