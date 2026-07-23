@@ -3,6 +3,7 @@ package com.example.shopapp.server.repository
 import com.example.shopapp.server.db.Database
 import com.example.shopapp.server.dto.CreateOrderRequest
 import com.example.shopapp.server.dto.CreateOrderResponse
+import com.example.shopapp.server.dto.CreateOrderItemRequest
 import com.example.shopapp.server.dto.OrderDetailsDto
 import com.example.shopapp.server.dto.OrderItemDto
 import com.example.shopapp.server.service.PromoCode
@@ -13,32 +14,36 @@ import java.sql.Statement
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 
+class InvalidOrderException(message: String) : IllegalArgumentException(message)
+class ProductNotFoundException(message: String) : RuntimeException(message)
+class StockConflictException(message: String) : RuntimeException(message)
+
 class OrderRepository(
     private val database: Database,
     private val promoService: PromoService = PromoService(),
 ) {
     fun create(request: CreateOrderRequest): CreateOrderResponse {
-        require(request.customerName.isNotBlank()) { "Customer name is required" }
-        require(request.items.isNotEmpty()) { "Order must contain at least one item" }
-        require(request.items.all { it.quantity > 0 }) { "Item quantity must be positive" }
-        require(request.items.map { it.productId }.distinct().size == request.items.size) {
-            "Duplicate products are not allowed"
-        }
+        if (request.customerName.isBlank()) throw InvalidOrderException("Customer name is required")
+        if (request.items.isEmpty()) throw InvalidOrderException("Order must contain at least one item")
+        if (request.items.any { it.quantity <= 0 }) throw InvalidOrderException("Item quantity must be positive")
+        val normalizedRequest = request.copy(items = mergeItems(request.items))
 
         return database.transaction { connection ->
-            val products = loadProducts(connection, request.items.map { it.productId })
-            require(products.size == request.items.size) { "Product not found or inactive" }
-            request.items.forEach { item ->
-                require(products.getValue(item.productId).stock >= item.quantity) {
-                    "Not enough stock for product ${item.productId}"
+            val productIds = normalizedRequest.items.map { it.productId }
+            val products = loadProducts(connection, productIds)
+            val missingIds = productIds.filterNot(products::containsKey)
+            if (missingIds.isNotEmpty()) {
+                throw ProductNotFoundException("Products not found or inactive: ${missingIds.joinToString()}")
+            }
+            normalizedRequest.items.forEach { item ->
+                if (products.getValue(item.productId).stock < item.quantity) {
+                    throw StockConflictException("Not enough stock for product ${item.productId}")
                 }
             }
 
-            val subtotal = request.items.sumOf { item ->
-                Math.multiplyExact(products.getValue(item.productId).priceKopecks, item.quantity.toLong())
-            }
+            val subtotal = calculateSubtotal(normalizedRequest.items, products)
             val now = LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
-            val requestedCode = request.promocode?.trim()?.takeIf(String::isNotEmpty)
+            val requestedCode = normalizedRequest.promocode?.trim()?.takeIf(String::isNotEmpty)
             val promocode = requestedCode?.let { findPromocode(connection, it) }
             val promoResult = if (requestedCode == null) {
                 PromoResult(0)
@@ -46,19 +51,20 @@ class OrderRepository(
                 promoService.calculate(promocode, subtotal, LocalDateTime.parse(now))
             }
             val appliedPromocode = promocode?.takeIf { promoResult.reason == null }
-            val orderId = insertOrder(connection, request, appliedPromocode?.code, now)
+            val orderId = insertOrder(connection, normalizedRequest, appliedPromocode?.code, now)
 
-            insertItems(connection, orderId, request, products)
+            insertItems(connection, orderId, normalizedRequest, products)
             insertInitialStatus(connection, orderId, now)
-            decrementStock(connection, request)
+            decrementStock(connection, normalizedRequest)
             appliedPromocode?.let { incrementPromocodeUse(connection, it.code) }
 
             CreateOrderResponse(
                 orderId = orderId,
-                subtotalKopecks = subtotal,
-                discountKopecks = promoResult.discountKopecks,
-                totalKopecks = subtotal - promoResult.discountKopecks,
-                promocodeReason = promoResult.reason,
+                subtotal = subtotal,
+                discount = promoResult.discountKopecks,
+                total = subtotal - promoResult.discountKopecks,
+                promoApplied = appliedPromocode != null,
+                promoMessage = promoResult.reason,
             )
         }
     }
@@ -102,6 +108,30 @@ class OrderRepository(
     }
 
     private data class ProductSnapshot(val name: String, val priceKopecks: Long, val stock: Int)
+
+    private fun mergeItems(items: List<CreateOrderItemRequest>): List<CreateOrderItemRequest> =
+        try {
+            items.groupingBy { it.productId }
+                .fold(0) { quantity, item -> Math.addExact(quantity, item.quantity) }
+                .map { (productId, quantity) -> CreateOrderItemRequest(productId, quantity) }
+        } catch (_: ArithmeticException) {
+            throw InvalidOrderException("Item quantity is too large")
+        }
+
+    private fun calculateSubtotal(
+        items: List<CreateOrderItemRequest>,
+        products: Map<Long, ProductSnapshot>,
+    ): Long = try {
+        items.fold(0L) { total, item ->
+            val itemTotal = Math.multiplyExact(
+                products.getValue(item.productId).priceKopecks,
+                item.quantity.toLong(),
+            )
+            Math.addExact(total, itemTotal)
+        }
+    } catch (_: ArithmeticException) {
+        throw InvalidOrderException("Order subtotal is too large")
+    }
 
     private fun loadProducts(connection: Connection, ids: List<Long>): Map<Long, ProductSnapshot> {
         val placeholders = ids.joinToString(",") { "?" }
@@ -187,7 +217,9 @@ class OrderRepository(
                 it.setInt(1, item.quantity)
                 it.setLong(2, item.productId)
                 it.setInt(3, item.quantity)
-                check(it.executeUpdate() == 1) { "Could not update product stock" }
+                if (it.executeUpdate() != 1) {
+                    throw StockConflictException("Stock changed for product ${item.productId}")
+                }
             }
         }
     }

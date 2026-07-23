@@ -1,8 +1,12 @@
 package com.example.shopapp.server
 
 import com.example.shopapp.server.db.Database
+import com.example.shopapp.server.dto.CreateOrderRequest
 import com.example.shopapp.server.repository.CatalogRepository
+import com.example.shopapp.server.repository.InvalidOrderException
 import com.example.shopapp.server.repository.OrderRepository
+import com.example.shopapp.server.repository.ProductNotFoundException
+import com.example.shopapp.server.repository.StockConflictException
 import com.example.shopapp.server.repository.StatsRepository
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
@@ -65,10 +69,17 @@ fun Application.module(databasePath: Path = defaultDatabasePath()) {
             }
 
             post("/orders") {
+                val request = runCatching { call.receive<CreateOrderRequest>() }.getOrElse {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid request body"))
+                }
                 try {
-                    call.respond(HttpStatusCode.Created, orderRepository.create(call.receive()))
-                } catch (exception: IllegalArgumentException) {
+                    call.respond(HttpStatusCode.Created, orderRepository.create(request))
+                } catch (exception: InvalidOrderException) {
                     call.respond(HttpStatusCode.BadRequest, ErrorResponse(exception.message ?: "Invalid order"))
+                } catch (exception: ProductNotFoundException) {
+                    call.respond(HttpStatusCode.NotFound, ErrorResponse(exception.message ?: "Product not found"))
+                } catch (exception: StockConflictException) {
+                    call.respond(HttpStatusCode.Conflict, ErrorResponse(exception.message ?: "Stock conflict"))
                 }
             }
 

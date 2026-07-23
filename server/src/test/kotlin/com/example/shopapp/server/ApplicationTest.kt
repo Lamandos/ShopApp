@@ -114,7 +114,10 @@ class ApplicationTest {
 
             assertEquals(HttpStatusCode.Created, createResponse.status)
             val createBody = createResponse.bodyAsText()
-            assertTrue(createBody.contains(""""totalKopecks":549000"""))
+            assertTrue(createBody.contains(""""subtotal":599000"""))
+            assertTrue(createBody.contains(""""discount":50000"""))
+            assertTrue(createBody.contains(""""total":549000"""))
+            assertTrue(createBody.contains(""""promoApplied":true"""))
             val orderId = Regex(""""orderId":(\d+)""").find(createBody)!!.groupValues[1]
 
             val detailsResponse = client.get("/api/orders/$orderId")
@@ -122,6 +125,7 @@ class ApplicationTest {
             val detailsBody = detailsResponse.bodyAsText()
             assertTrue(detailsBody.contains(""""status":"new""""))
             assertTrue(detailsBody.contains(""""discountKopecks":50000"""))
+            assertEquals(89, databaseValue(databasePath, "SELECT used_count FROM promocodes WHERE code = 'FIX500'"))
         }
     }
 
@@ -145,8 +149,65 @@ class ApplicationTest {
 
             assertEquals(HttpStatusCode.Created, response.status)
             val body = response.bodyAsText()
-            assertTrue(body.contains(""""discountKopecks":0"""))
-            assertTrue(body.contains(""""promocodeReason":"EXPIRED""""))
+            assertTrue(body.contains(""""discount":0"""))
+            assertTrue(body.contains(""""promoApplied":false"""))
+            assertTrue(body.contains(""""promoMessage":"EXPIRED""""))
+            assertEquals(12, databaseValue(databasePath, "SELECT used_count FROM promocodes WHERE code = 'EXPIRED'"))
+        }
+    }
+
+    @Test
+    fun duplicateProductsAreMerged() = withTestDatabase { databasePath ->
+        testApplication {
+            application { module(databasePath) }
+
+            val createResponse = client.post("/api/orders") {
+                header(HttpHeaders.ContentType, ContentType.Application.Json)
+                setBody(
+                    """
+                    {
+                      "customerName": "Тест",
+                      "phone": "+79990000000",
+                      "address": "Москва",
+                      "items": [
+                        {"productId": 9, "quantity": 1},
+                        {"productId": 9, "quantity": 2}
+                      ]
+                    }
+                    """.trimIndent()
+                )
+            }
+
+            assertEquals(HttpStatusCode.Created, createResponse.status)
+            val createBody = createResponse.bodyAsText()
+            assertTrue(createBody.contains(""""subtotal":1797000"""))
+            assertTrue(createBody.contains(""""promoApplied":false"""))
+            val orderId = Regex(""""orderId":(\d+)""").find(createBody)!!.groupValues[1]
+
+            val detailsBody = client.get("/api/orders/$orderId").bodyAsText()
+            assertEquals(1, Regex(""""productId":9""").findAll(detailsBody).count())
+            assertTrue(detailsBody.contains(""""quantity":3"""))
+            assertEquals(147, databaseValue(databasePath, "SELECT stock FROM products WHERE id = 9"))
+        }
+    }
+
+    @Test
+    fun orderValidationUsesClearStatuses() = withTestDatabase { databasePath ->
+        testApplication {
+            application { module(databasePath) }
+
+            assertEquals(
+                HttpStatusCode.BadRequest,
+                client.postOrder("""{"customerName":" ","items":[{"productId":9,"quantity":1}]}""").status,
+            )
+            assertEquals(
+                HttpStatusCode.NotFound,
+                client.postOrder("""{"customerName":"Тест","items":[{"productId":16,"quantity":1}]}""").status,
+            )
+            assertEquals(
+                HttpStatusCode.Conflict,
+                client.postOrder("""{"customerName":"Тест","items":[{"productId":6,"quantity":16}]}""").status,
+            )
         }
     }
 
@@ -185,4 +246,20 @@ class ApplicationTest {
             Files.deleteIfExists(copy)
         }
     }
+
+    private suspend fun io.ktor.client.HttpClient.postOrder(body: String) =
+        post("/api/orders") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json)
+            setBody(body)
+        }
+
+    private fun databaseValue(databasePath: Path, sql: String): Int =
+        Database(databasePath).connection().use { connection ->
+            connection.prepareStatement(sql).use { statement ->
+                statement.executeQuery().use { result ->
+                    assertTrue(result.next())
+                    result.getInt(1)
+                }
+            }
+        }
 }
