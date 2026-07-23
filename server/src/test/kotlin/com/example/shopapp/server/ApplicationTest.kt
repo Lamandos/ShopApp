@@ -140,6 +140,7 @@ class ApplicationTest {
 
     @Test
     fun orderIsCreatedWithFixedDiscountAndCanBeRead() = withTestDatabase { databasePath ->
+        val usesBefore = databaseValue(databasePath, "SELECT used_count FROM promocodes WHERE code = 'FIX500'")
         testApplication {
             application { module(databasePath) }
 
@@ -169,12 +170,16 @@ class ApplicationTest {
             val detailsBody = detailsResponse.bodyAsText()
             assertTrue(detailsBody.contains(""""status":"new""""))
             assertTrue(detailsBody.contains(""""discountKopecks":50000"""))
-            assertEquals(89, databaseValue(databasePath, "SELECT used_count FROM promocodes WHERE code = 'FIX500'"))
+            assertEquals(
+                usesBefore + 1,
+                databaseValue(databasePath, "SELECT used_count FROM promocodes WHERE code = 'FIX500'"),
+            )
         }
     }
 
     @Test
     fun invalidPromoDoesNotPreventOrderCreation() = withTestDatabase { databasePath ->
+        val usesBefore = databaseValue(databasePath, "SELECT used_count FROM promocodes WHERE code = 'EXPIRED'")
         testApplication {
             application { module(databasePath) }
 
@@ -196,12 +201,16 @@ class ApplicationTest {
             assertTrue(body.contains(""""discount":0"""))
             assertTrue(body.contains(""""promoApplied":false"""))
             assertTrue(body.contains(""""promoMessage":"EXPIRED""""))
-            assertEquals(12, databaseValue(databasePath, "SELECT used_count FROM promocodes WHERE code = 'EXPIRED'"))
+            assertEquals(
+                usesBefore,
+                databaseValue(databasePath, "SELECT used_count FROM promocodes WHERE code = 'EXPIRED'"),
+            )
         }
     }
 
     @Test
     fun duplicateProductsAreMerged() = withTestDatabase { databasePath ->
+        val stockBefore = databaseValue(databasePath, "SELECT stock FROM products WHERE id = 9")
         testApplication {
             application { module(databasePath) }
 
@@ -231,7 +240,7 @@ class ApplicationTest {
             val detailsBody = client.get("/api/orders/$orderId").bodyAsText()
             assertEquals(1, Regex(""""productId":9""").findAll(detailsBody).count())
             assertTrue(detailsBody.contains(""""quantity":3"""))
-            assertEquals(147, databaseValue(databasePath, "SELECT stock FROM products WHERE id = 9"))
+            assertEquals(stockBefore - 3, databaseValue(databasePath, "SELECT stock FROM products WHERE id = 9"))
         }
     }
 
