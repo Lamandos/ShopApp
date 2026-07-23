@@ -1,0 +1,43 @@
+package com.example.shopapp
+
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextInput
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.Rule
+import org.junit.Test
+import org.junit.runner.RunWith
+
+@RunWith(AndroidJUnit4::class)
+class OrderFlowTest {
+    @get:Rule
+    val composeRule = createAndroidComposeRule<MainActivity>()
+
+    @Test
+    fun createsOrderAndShowsPromoMessage() {
+        composeRule.onNodeWithTag("catalog_search").performTextInput("JBL")
+        composeRule.waitUntil(timeoutMillis = 10_000) {
+            composeRule.onAllNodesWithText("JBL Tune 520BT")
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+
+        composeRule.onNodeWithTag("increase_product_9").performClick()
+        composeRule.onNodeWithTag("checkout").performClick()
+        composeRule.onNodeWithTag("order_customer_name").performTextInput("Телефонный тест")
+        composeRule.onNodeWithTag("order_phone").performTextInput("+79990000000")
+        composeRule.onNodeWithTag("order_address").performTextInput("Москва")
+        composeRule.onNodeWithTag("order_promocode").performTextInput("EXPIRED")
+        composeRule.onNodeWithTag("order_submit").performClick()
+
+        composeRule.waitUntil(timeoutMillis = 10_000) {
+            composeRule.onAllNodesWithText("Заказ оформлен")
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithTag("order_result").assertIsDisplayed()
+        composeRule.onNodeWithText("Промокод: EXPIRED").assertIsDisplayed()
+    }
+}

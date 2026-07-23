@@ -1,5 +1,6 @@
 package com.example.shopapp.data
 
+import com.example.shopapp.BuildConfig
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
 import retrofit2.Retrofit
@@ -9,7 +10,7 @@ object ShopAppContainer {
     private val api: ShopApi by lazy {
         val json = Json { ignoreUnknownKeys = true }
         Retrofit.Builder()
-            .baseUrl("http://10.0.2.2:8080/")
+            .baseUrl(BuildConfig.SHOP_API_BASE_URL)
             .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
             .build()
             .create(ShopApi::class.java)
