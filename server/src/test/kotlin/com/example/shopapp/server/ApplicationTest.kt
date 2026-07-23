@@ -126,6 +126,31 @@ class ApplicationTest {
     }
 
     @Test
+    fun invalidPromoDoesNotPreventOrderCreation() = withTestDatabase { databasePath ->
+        testApplication {
+            application { module(databasePath) }
+
+            val response = client.post("/api/orders") {
+                header(HttpHeaders.ContentType, ContentType.Application.Json)
+                setBody(
+                    """
+                    {
+                      "customerName": "Тест",
+                      "promocode": "EXPIRED",
+                      "items": [{"productId": 9, "quantity": 1}]
+                    }
+                    """.trimIndent()
+                )
+            }
+
+            assertEquals(HttpStatusCode.Created, response.status)
+            val body = response.bodyAsText()
+            assertTrue(body.contains(""""discountKopecks":0"""))
+            assertTrue(body.contains(""""promocodeReason":"EXPIRED""""))
+        }
+    }
+
+    @Test
     fun statsAreReturnedInKopecks() = withTestDatabase { databasePath ->
         testApplication {
             application { module(databasePath) }

@@ -3,9 +3,12 @@ package com.example.shopapp.server.repository
 import com.example.shopapp.server.db.Database
 import com.example.shopapp.server.dto.StatsDto
 import com.example.shopapp.server.dto.TopProductDto
+import com.example.shopapp.server.service.PromoCode
+import com.example.shopapp.server.service.PromoService
 import java.sql.Connection
 
 class StatsRepository(private val database: Database) {
+    private val promoService = PromoService()
     fun get(from: String?, to: String?): StatsDto = database.query { connection ->
         val paidOrders = loadPaidOrders(connection, from, to)
         val revenue = paidOrders.sumOf { it.totalKopecks }
@@ -48,7 +51,7 @@ class StatsRepository(private val database: Database) {
                         val promocode = result.getString("promocode")?.let {
                             findPromocode(connection, it, subtotal, result.getString("created_at"))
                         }
-                        add(PaidOrder(subtotal - (promocode?.discount(subtotal) ?: 0)))
+                        add(PaidOrder(subtotal - (promocode?.let { promoService.discount(it, subtotal) } ?: 0)))
                     }
                 }
             }
@@ -110,10 +113,10 @@ class StatsRepository(private val database: Database) {
         }
     }
 
-    private fun findPromocode(connection: Connection, code: String, subtotal: Long, at: String): Promocode? =
+    private fun findPromocode(connection: Connection, code: String, subtotal: Long, at: String): PromoCode? =
         connection.prepareStatement(
             """
-            SELECT code, type, value FROM promocodes
+            SELECT code, type, value, is_active, valid_until, min_order, max_uses, used_count FROM promocodes
             WHERE code = ? AND (valid_until IS NULL OR valid_until >= ?)
               AND (min_order IS NULL OR min_order <= ?)
             """.trimIndent()
@@ -122,8 +125,17 @@ class StatsRepository(private val database: Database) {
             statement.setString(2, at)
             statement.setLong(3, subtotal)
             statement.executeQuery().use { result ->
-                if (result.next()) Promocode(result.getString("code"), result.getString("type"), result.getBigDecimal("value"))
-                else null
+                if (!result.next()) return@use null
+                PromoCode(
+                    code = result.getString("code"),
+                    type = result.getString("type"),
+                    value = result.getBigDecimal("value"),
+                    isActive = result.getBoolean("is_active"),
+                    validUntil = result.getString("valid_until"),
+                    minOrderKopecks = result.getLong("min_order").takeUnless { result.wasNull() },
+                    maxUses = result.getInt("max_uses").takeUnless { result.wasNull() },
+                    usedCount = result.getInt("used_count"),
+                )
             }
         }
 

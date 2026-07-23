@@ -5,12 +5,18 @@ import com.example.shopapp.server.dto.CreateOrderRequest
 import com.example.shopapp.server.dto.CreateOrderResponse
 import com.example.shopapp.server.dto.OrderDetailsDto
 import com.example.shopapp.server.dto.OrderItemDto
+import com.example.shopapp.server.service.PromoCode
+import com.example.shopapp.server.service.PromoResult
+import com.example.shopapp.server.service.PromoService
 import java.sql.Connection
 import java.sql.Statement
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 
-class OrderRepository(private val database: Database) {
+class OrderRepository(
+    private val database: Database,
+    private val promoService: PromoService = PromoService(),
+) {
     fun create(request: CreateOrderRequest): CreateOrderResponse {
         require(request.customerName.isNotBlank()) { "Customer name is required" }
         require(request.items.isNotEmpty()) { "Order must contain at least one item" }
@@ -32,17 +38,28 @@ class OrderRepository(private val database: Database) {
                 Math.multiplyExact(products.getValue(item.productId).priceKopecks, item.quantity.toLong())
             }
             val now = LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
-            val promocode = request.promocode?.trim()?.takeIf(String::isNotEmpty)
-                ?.let { findValidPromocode(connection, it, subtotal, now) }
-            val discount = promocode?.discount(subtotal) ?: 0
-            val orderId = insertOrder(connection, request, promocode?.code, now)
+            val requestedCode = request.promocode?.trim()?.takeIf(String::isNotEmpty)
+            val promocode = requestedCode?.let { findPromocode(connection, it) }
+            val promoResult = if (requestedCode == null) {
+                PromoResult(0)
+            } else {
+                promoService.calculate(promocode, subtotal, LocalDateTime.parse(now))
+            }
+            val appliedPromocode = promocode?.takeIf { promoResult.reason == null }
+            val orderId = insertOrder(connection, request, appliedPromocode?.code, now)
 
             insertItems(connection, orderId, request, products)
             insertInitialStatus(connection, orderId, now)
             decrementStock(connection, request)
-            promocode?.let { incrementPromocodeUse(connection, it.code) }
+            appliedPromocode?.let { incrementPromocodeUse(connection, it.code) }
 
-            CreateOrderResponse(orderId, subtotal - discount)
+            CreateOrderResponse(
+                orderId = orderId,
+                subtotalKopecks = subtotal,
+                discountKopecks = promoResult.discountKopecks,
+                totalKopecks = subtotal - promoResult.discountKopecks,
+                promocodeReason = promoResult.reason,
+            )
         }
     }
 
@@ -65,7 +82,7 @@ class OrderRepository(private val database: Database) {
                 val subtotal = items.sumOf { Math.multiplyExact(it.priceKopecks, it.quantity.toLong()) }
                 val promocode = result.getString("promocode")
                 val discount = promocode?.let {
-                    findPromocodeAt(connection, it, subtotal, result.getString("created_at"))?.discount(subtotal)
+                    findPromocode(connection, it)?.let { found -> promoService.discount(found, subtotal) }
                 } ?: 0
                 OrderDetailsDto(
                     id = result.getLong("id"),
@@ -206,47 +223,25 @@ class OrderRepository(private val database: Database) {
             }
         }
 
-    private fun findValidPromocode(
-        connection: Connection,
-        code: String,
-        subtotal: Long,
-        at: String,
-    ): Promocode? = connection.prepareStatement(
+    private fun findPromocode(connection: Connection, code: String): PromoCode? = connection.prepareStatement(
         """
-        SELECT code, type, value FROM promocodes
-        WHERE code = ? AND is_active = 1
-          AND (valid_until IS NULL OR valid_until >= ?)
-          AND (min_order IS NULL OR min_order <= ?)
-          AND (max_uses IS NULL OR used_count < max_uses)
+        SELECT code, type, value, is_active, valid_until, min_order, max_uses, used_count
+        FROM promocodes WHERE code = ?
         """.trimIndent()
     ).use { statement ->
         statement.setString(1, code)
-        statement.setString(2, at)
-        statement.setLong(3, subtotal)
         statement.executeQuery().use { result ->
-            if (result.next()) Promocode(result.getString("code"), result.getString("type"), result.getBigDecimal("value"))
-            else null
-        }
-    }
-
-    private fun findPromocodeAt(
-        connection: Connection,
-        code: String,
-        subtotal: Long,
-        at: String,
-    ): Promocode? = connection.prepareStatement(
-        """
-        SELECT code, type, value FROM promocodes
-        WHERE code = ? AND (valid_until IS NULL OR valid_until >= ?)
-          AND (min_order IS NULL OR min_order <= ?)
-        """.trimIndent()
-    ).use { statement ->
-        statement.setString(1, code)
-        statement.setString(2, at)
-        statement.setLong(3, subtotal)
-        statement.executeQuery().use { result ->
-            if (result.next()) Promocode(result.getString("code"), result.getString("type"), result.getBigDecimal("value"))
-            else null
+            if (!result.next()) return@use null
+            PromoCode(
+                code = result.getString("code"),
+                type = result.getString("type"),
+                value = result.getBigDecimal("value"),
+                isActive = result.getBoolean("is_active"),
+                validUntil = result.getString("valid_until"),
+                minOrderKopecks = result.getLong("min_order").takeUnless { result.wasNull() },
+                maxUses = result.getInt("max_uses").takeUnless { result.wasNull() },
+                usedCount = result.getInt("used_count"),
+            )
         }
     }
 }

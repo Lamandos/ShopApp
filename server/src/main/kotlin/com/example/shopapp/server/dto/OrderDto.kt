@@ -20,7 +20,10 @@ data class CreateOrderItemRequest(
 @Serializable
 data class CreateOrderResponse(
     val orderId: Long,
+    val subtotalKopecks: Long,
+    val discountKopecks: Long,
     val totalKopecks: Long,
+    val promocodeReason: String? = null,
 )
 
 @Serializable
