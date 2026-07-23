@@ -19,6 +19,15 @@
 curl http://localhost:8080/health
 ```
 
+Запуск сервера и Android-приложения на уже запущенном эмуляторе одной командой:
+
+```shell
+./run.sh
+```
+
+Для `run.sh` нужны `adb` в `PATH`, `curl` и подключённый эмулятор. Android-приложение
+обращается к серверу хоста по адресу `http://10.0.2.2:8080`.
+
 REST API:
 
 - `GET /api/products?category=<id>&search=<text>`
