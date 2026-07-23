@@ -11,6 +11,7 @@ import com.example.shopapp.server.service.PromoResult
 import com.example.shopapp.server.service.PromoService
 import java.sql.Connection
 import java.sql.Statement
+import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 
@@ -76,7 +77,7 @@ class OrderRepository(
                    COALESCE((
                        SELECT h.status FROM order_status_history h
                        WHERE h.order_id = o.id
-                       ORDER BY h.created_at DESC, h.id DESC LIMIT 1
+                       ORDER BY datetime(h.created_at) DESC, h.id DESC LIMIT 1
                    ), 'new') AS current_status
             FROM orders o WHERE o.id = ?
             """.trimIndent()
@@ -88,7 +89,13 @@ class OrderRepository(
                 val subtotal = items.sumOf { Math.multiplyExact(it.priceKopecks, it.quantity.toLong()) }
                 val promocode = result.getString("promocode")
                 val discount = promocode?.let {
-                    findPromocode(connection, it)?.let { found -> promoService.discount(found, subtotal) }
+                    findPromocode(connection, it)?.let { found ->
+                        promoService.calculate(
+                            promo = found,
+                            subtotalKopecks = subtotal,
+                            now = parseOrderCreatedAt(result.getString("created_at")),
+                        ).discountKopecks
+                    }
                 } ?: 0
                 OrderDetailsDto(
                     id = result.getLong("id"),
@@ -108,6 +115,10 @@ class OrderRepository(
     }
 
     private data class ProductSnapshot(val name: String, val priceKopecks: Long, val stock: Int)
+
+    private fun parseOrderCreatedAt(value: String): LocalDateTime =
+        runCatching { LocalDateTime.parse(value) }
+            .getOrElse { LocalDate.parse(value).atStartOfDay() }
 
     private fun mergeItems(items: List<CreateOrderItemRequest>): List<CreateOrderItemRequest> =
         try {

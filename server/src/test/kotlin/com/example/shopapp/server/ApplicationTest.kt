@@ -95,6 +95,50 @@ class ApplicationTest {
     }
 
     @Test
+    fun orderDetailsUseSnapshotsHistoricalPromoAndLatestHistoryStatus() = withTestDatabase { databasePath ->
+        executeSql(
+            databasePath,
+            """
+            UPDATE products SET price = 1 WHERE id IN (1, 11);
+            UPDATE orders SET status = 'cancelled' WHERE id = 4;
+            INSERT INTO order_status_history(order_id, status, created_at)
+                VALUES (4, 'paid', '2099-01-01T10:00:00+02:00');
+            INSERT INTO order_status_history(order_id, status, created_at)
+                VALUES (4, 'shipped', '2099-01-01T09:30:00+00:00');
+            """.trimIndent(),
+        )
+
+        testApplication {
+            application { module(databasePath) }
+
+            val response = client.get("/api/orders/4")
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            val body = response.bodyAsText()
+            assertTrue(body.contains(""""status":"shipped""""))
+            assertTrue(body.contains(""""subtotalKopecks":13298000"""))
+            assertTrue(body.contains(""""discountKopecks":1994700"""))
+            assertTrue(body.contains(""""totalKopecks":11303300"""))
+            assertTrue(body.contains(""""priceKopecks":12999000"""))
+            assertTrue(body.contains(""""priceKopecks":299000"""))
+
+            val belowMinimumBody = client.get("/api/orders/2").bodyAsText()
+            assertTrue(belowMinimumBody.contains(""""subtotalKopecks":2098100"""))
+            assertTrue(belowMinimumBody.contains(""""discountKopecks":0"""))
+            assertTrue(belowMinimumBody.contains(""""totalKopecks":2098100"""))
+        }
+    }
+
+    @Test
+    fun missingOrderReturnsNotFound() = withTestDatabase { databasePath ->
+        testApplication {
+            application { module(databasePath) }
+
+            assertEquals(HttpStatusCode.NotFound, client.get("/api/orders/999999").status)
+        }
+    }
+
+    @Test
     fun orderIsCreatedWithFixedDiscountAndCanBeRead() = withTestDatabase { databasePath ->
         testApplication {
             application { module(databasePath) }
@@ -262,4 +306,12 @@ class ApplicationTest {
                 }
             }
         }
+
+    private fun executeSql(databasePath: Path, sql: String) {
+        Database(databasePath).connection().use { connection ->
+            connection.createStatement().use { statement ->
+                sql.split(';').filter(String::isNotBlank).forEach(statement::executeUpdate)
+            }
+        }
+    }
 }
